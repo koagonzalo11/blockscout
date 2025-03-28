@@ -48,13 +48,18 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   use GenServer
   use Indexer.Fetcher
 
-  alias Indexer.Fetcher.Arbitrum.Workers.{L1Finalization, NewBatches, NewConfirmations, NewL1Executions}
+  alias Indexer.Fetcher.Arbitrum.Workers.Batches.Tasks, as: BatchesDiscoveryTasks
+  alias Indexer.Fetcher.Arbitrum.Workers.Confirmations.Tasks, as: ConfirmationsDiscoveryTasks
+  alias Indexer.Fetcher.Arbitrum.Workers.{L1Finalization, NewL1Executions}
 
   import Indexer.Fetcher.Arbitrum.Utils.Helper, only: [increase_duration: 2]
 
   alias EthereumJSONRPC.Arbitrum, as: ArbitrumRpc
+  alias EthereumJSONRPC.Utility.RangesHelper
+  alias Indexer.Fetcher.Arbitrum.Utils.Db.Messages, as: DbMessages
+  alias Indexer.Fetcher.Arbitrum.Utils.Db.Settlement, as: DbSettlement
+  alias Indexer.Fetcher.Arbitrum.Utils.Rpc
   alias Indexer.Helper, as: IndexerHelper
-  alias Indexer.Fetcher.Arbitrum.Utils.{Db, Rpc}
 
   require Logger
 
@@ -96,6 +101,9 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
     missing_batches_range = config_tracker[:missing_batches_range]
     node_interface_address = config_tracker[:node_interface_contract]
 
+    indexer_first_block =
+      RangesHelper.get_min_block_number_from_range_string(Application.get_env(:indexer, :block_ranges))
+
     Process.send(self(), :init_worker, [])
 
     {:ok,
@@ -120,7 +128,8 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
          missing_batches_range: missing_batches_range,
          messages_to_blocks_shift: messages_to_blocks_shift,
          confirmation_batches_depth: confirmation_batches_depth,
-         node_interface_address: node_interface_address
+         node_interface_address: node_interface_address,
+         rollup_first_block: indexer_first_block
        },
        data: %{}
      }}
@@ -169,15 +178,15 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
 
     l1_start_block = Rpc.get_l1_start_block(state.config.l1_start_block, json_l1_rpc_named_arguments)
 
-    new_batches_start_block = Db.l1_block_to_discover_latest_committed_batch(l1_start_block)
-    historical_batches_end_block = Db.l1_block_to_discover_earliest_committed_batch(l1_start_block - 1)
+    new_batches_start_block = DbSettlement.l1_block_to_discover_latest_committed_batch(l1_start_block)
+    historical_batches_end_block = DbSettlement.l1_block_to_discover_earliest_committed_batch(l1_start_block - 1)
 
-    new_confirmations_start_block = Db.l1_block_of_latest_confirmed_block(l1_start_block)
+    new_confirmations_start_block = DbSettlement.l1_block_of_latest_confirmed_block(l1_start_block)
 
-    new_executions_start_block = Db.l1_block_to_discover_latest_execution(l1_start_block)
-    historical_executions_end_block = Db.l1_block_to_discover_earliest_execution(l1_start_block - 1)
+    new_executions_start_block = DbMessages.l1_block_to_discover_latest_execution(l1_start_block)
+    historical_executions_end_block = DbMessages.l1_block_to_discover_earliest_execution(l1_start_block - 1)
 
-    {lowest_batch, missing_batches_end_batch} = Db.get_min_max_batch_numbers()
+    {lowest_batch, missing_batches_end_batch} = DbSettlement.get_min_max_batch_numbers()
 
     Process.send(self(), :check_new_batches, [])
 
@@ -229,7 +238,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   the next iteration of new batch discovery.
   @impl GenServer
   def handle_info(:check_new_batches, state) do
-    {handle_duration, {:ok, end_block}} = :timer.tc(&NewBatches.discover_new_batches/1, [state])
+    {handle_duration, {:ok, end_block}} = :timer.tc(&BatchesDiscoveryTasks.check_new/1, [state])
 
     Process.send(self(), :check_new_confirmations, [])
 
@@ -262,7 +271,8 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   block for the next iteration of new confirmation discovery.
   @impl GenServer
   def handle_info(:check_new_confirmations, state) do
-    {handle_duration, {_, new_state}} = :timer.tc(&NewConfirmations.discover_new_rollup_confirmation/1, [state])
+    {handle_duration, {_, new_state}} =
+      :timer.tc(&ConfirmationsDiscoveryTasks.plan/2, [&ConfirmationsDiscoveryTasks.check_new/1, state])
 
     Process.send(self(), :check_new_executions, [])
 
@@ -325,17 +335,17 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   for the next iteration of historical batch discovery.
   @impl GenServer
   def handle_info(:check_historical_batches, state) do
-    {handle_duration, {:ok, start_block}} = :timer.tc(&NewBatches.discover_historical_batches/1, [state])
+    {handle_duration, {:ok, start_block, new_state}} = :timer.tc(&BatchesDiscoveryTasks.check_historical/1, [state])
 
     Process.send(self(), :check_missing_batches, [])
 
     new_data =
-      Map.merge(state.data, %{
+      Map.merge(new_state.data, %{
         duration: increase_duration(state.data, handle_duration),
         historical_batches_end_block: start_block - 1
       })
 
-    {:noreply, %{state | data: new_data}}
+    {:noreply, %{new_state | data: new_data}}
   end
 
   # Initiates the process of inspecting for missing batches of rollup transactions.
@@ -367,9 +377,10 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
       if is_nil(state.config.lowest_batch) do
         state.data
       else
-        {handle_duration, {:ok, start_batch}} = :timer.tc(&NewBatches.inspect_for_missing_batches/1, [state])
+        {handle_duration, {:ok, start_batch, new_state}} =
+          :timer.tc(&BatchesDiscoveryTasks.inspect_for_missing/1, [state])
 
-        Map.merge(state.data, %{
+        Map.merge(new_state.data, %{
           duration: increase_duration(state.data, handle_duration),
           missing_batches_end_batch: start_batch - 1
         })
@@ -401,7 +412,7 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   @impl GenServer
   def handle_info(:check_historical_confirmations, state) do
     {handle_duration, {_, new_state}} =
-      :timer.tc(&NewConfirmations.discover_historical_rollup_confirmation/1, [state])
+      :timer.tc(&ConfirmationsDiscoveryTasks.plan/2, [&ConfirmationsDiscoveryTasks.check_unprocessed/1, state])
 
     Process.send(self(), :check_historical_executions, [])
 
@@ -430,18 +441,18 @@ defmodule Indexer.Fetcher.Arbitrum.TrackingBatchesStatuses do
   #   the next iteration of historical executions.
   @impl GenServer
   def handle_info(:check_historical_executions, state) do
-    {handle_duration, {:ok, start_block}} =
+    {handle_duration, {:ok, start_block, new_state}} =
       :timer.tc(&NewL1Executions.discover_historical_l1_messages_executions/1, [state])
 
     Process.send(self(), :check_lifecycle_transactions_finalization, [])
 
     new_data =
-      Map.merge(state.data, %{
+      Map.merge(new_state.data, %{
         duration: increase_duration(state.data, handle_duration),
         historical_executions_end_block: start_block - 1
       })
 
-    {:noreply, %{state | data: new_data}}
+    {:noreply, %{new_state | data: new_data}}
   end
 
   # Handles the periodic finalization check of lifecycle transactions.

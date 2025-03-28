@@ -286,7 +286,9 @@ defmodule Indexer.Block.FetcherTest do
     } do
       block_number = @first_full_block_number
 
-      Indexer.Fetcher.Filecoin.AddressInfo.Supervisor.Case.start_supervised!()
+      Indexer.Fetcher.Filecoin.AddressInfo.Supervisor.Case.start_supervised!(
+        json_rpc_named_arguments: json_rpc_named_arguments
+      )
 
       if json_rpc_named_arguments[:transport] == EthereumJSONRPC.Mox do
         case Keyword.fetch!(json_rpc_named_arguments, :variant) do
@@ -504,6 +506,11 @@ defmodule Indexer.Block.FetcherTest do
         end
       end
 
+      config = Application.get_env(:ethereum_jsonrpc, EthereumJSONRPC.Geth)
+      Application.put_env(:ethereum_jsonrpc, EthereumJSONRPC.Geth, Keyword.put(config, :block_traceable?, true))
+
+      on_exit(fn -> Application.put_env(:ethereum_jsonrpc, EthereumJSONRPC.Geth, config) end)
+
       case Keyword.fetch!(json_rpc_named_arguments, :variant) do
         EthereumJSONRPC.Geth ->
           block_number = 48230
@@ -695,7 +702,9 @@ defmodule Indexer.Block.FetcherTest do
     } do
       block_number = 7_374_455
 
-      Indexer.Fetcher.Filecoin.AddressInfo.Supervisor.Case.start_supervised!()
+      Indexer.Fetcher.Filecoin.AddressInfo.Supervisor.Case.start_supervised!(
+        json_rpc_named_arguments: json_rpc_named_arguments
+      )
 
       if json_rpc_named_arguments[:transport] == EthereumJSONRPC.Mox do
         EthereumJSONRPC.Mox

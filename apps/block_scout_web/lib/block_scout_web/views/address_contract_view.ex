@@ -11,6 +11,7 @@ defmodule BlockScoutWeb.AddressContractView do
   alias Explorer.Chain.{Address, Data, InternalTransaction, Transaction}
   alias Explorer.Chain.SmartContract
   alias Explorer.Chain.SmartContract.Proxy.EIP1167
+  alias Explorer.Helper, as: ExplorerHelper
   alias Explorer.SmartContract.Helper, as: SmartContractHelper
   alias Phoenix.HTML.Safe
 
@@ -64,9 +65,9 @@ defmodule BlockScoutWeb.AddressContractView do
         val_to_string_if_array(val, type, conn)
 
       type =~ "address" ->
-        address_hash = "0x" <> Base.encode16(val, case: :lower)
+        address_hash = ExplorerHelper.add_0x_prefix(val)
 
-        address = get_address(address_hash)
+        address = Chain.string_to_address_hash_or_nil(address_hash)
 
         get_formatted_address_data(address, address_hash, conn)
 
@@ -87,13 +88,6 @@ defmodule BlockScoutWeb.AddressContractView do
     end
   end
 
-  defp get_address(address_hash) do
-    case Chain.string_to_address_hash(address_hash) do
-      {:ok, address} -> address
-      _ -> nil
-    end
-  end
-
   defp get_formatted_address_data(address, address_hash, conn) do
     if address != nil do
       assigns = %{address: address, address_hash: address_hash, conn: conn}
@@ -108,7 +102,7 @@ defmodule BlockScoutWeb.AddressContractView do
 
   def format_external_libraries(libraries, conn) do
     Enum.reduce(libraries, "", fn %{name: name, address_hash: address_hash}, acc ->
-      address = get_address(address_hash)
+      address = Chain.string_to_address_hash_or_nil(address_hash)
       assigns = %{acc: acc, name: name, address: address, address_hash: address_hash, conn: conn}
 
       ~H"""

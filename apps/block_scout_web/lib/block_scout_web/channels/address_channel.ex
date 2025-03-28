@@ -66,8 +66,14 @@ defmodule BlockScoutWeb.AddressChannel do
                             ] ++
                               @chain_type_transaction_associations
 
-  def join("addresses:" <> address_hash, _params, socket) do
-    {:ok, %{}, assign(socket, :address_hash, address_hash)}
+  def join("addresses:" <> address_hash_string, _params, socket) do
+    case valid_address_hash_and_not_restricted_access?(address_hash_string) do
+      :ok ->
+        {:ok, %{}, assign(socket, :address_hash, address_hash_string)}
+
+      reason ->
+        {:error, %{reason: reason}}
+    end
   end
 
   def handle_in("get_balance", _, socket) do
@@ -411,14 +417,7 @@ defmodule BlockScoutWeb.AddressChannel do
       when is_list(token_transfers) do
     token_transfer_json =
       TransactionViewAPI.render("token_transfers.json", %{
-        token_transfers:
-          token_transfers
-          |> Repo.preload([
-            [
-              from_address: [:scam_badge, :names, :smart_contract, proxy_implementations_association()],
-              to_address: [:scam_badge, :names, :smart_contract, proxy_implementations_association()]
-            ]
-          ]),
+        token_transfers: token_transfers,
         conn: nil
       })
 

@@ -4,12 +4,11 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
 
   alias BlockScoutWeb.API.V2.{ApiView, Helper, InternalTransactionView, TokenTransferView, TokenView}
 
-  alias BlockScoutWeb.{ABIEncodedValueView, TransactionView}
   alias BlockScoutWeb.Models.GetTransactionTags
-  alias BlockScoutWeb.TransactionStateView
+  alias BlockScoutWeb.{TransactionStateView, TransactionView}
   alias Ecto.Association.NotLoaded
   alias Explorer.{Chain, Market}
-  alias Explorer.Chain.{Address, Block, Log, SignedAuthorization, Token, Transaction, Wei}
+  alias Explorer.Chain.{Address, Block, DecodingHelper, Log, SignedAuthorization, Token, Transaction, Wei}
   alias Explorer.Chain.Block.Reward
   alias Explorer.Chain.Transaction.StateChange
   alias Explorer.Counters.AverageBlockTime
@@ -227,22 +226,75 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
   """
   @spec decode_logs([Log.t()], boolean) :: [tuple]
   def decode_logs(logs, skip_sig_provider?) do
-    {result, _, _} =
-      Enum.reduce(logs, {[], %{}, %{}}, fn log, {results, contracts_acc, events_acc} ->
-        {result, contracts_acc, events_acc} =
+    unique_log_address_hashes =
+      logs
+      |> Enum.map(fn log -> log.address_hash end)
+      |> Enum.uniq()
+
+    full_abi_per_address_hash =
+      Log.accumulate_abi_by_address_hashes(%{}, unique_log_address_hashes, @api_true)
+
+    {all_logs, _, _} =
+      Enum.reduce(logs, {[], full_abi_per_address_hash, %{}}, fn log,
+                                                                 {results, full_abi_per_address_hash_acc, events_acc} ->
+        {result, full_abi_per_address_hash_acc, events_acc} =
           Log.decode(
             log,
             %Transaction{hash: log.transaction_hash},
             @api_true,
             skip_sig_provider?,
-            contracts_acc,
+            true,
+            full_abi_per_address_hash_acc[log.address_hash],
+            full_abi_per_address_hash_acc,
             events_acc
           )
 
-        {[format_decoded_log_input(result) | results], contracts_acc, events_acc}
+        {[result | results], full_abi_per_address_hash_acc, events_acc}
       end)
 
-    Enum.reverse(result)
+    all_logs_with_index =
+      all_logs
+      |> Enum.reverse()
+      |> Enum.with_index(fn element, index -> {index, element} end)
+
+    %{
+      :already_decoded_logs => already_decoded_logs,
+      :input_for_sig_provider_batched_request => input_for_sig_provider_batched_request
+    } =
+      all_logs_with_index
+      |> Enum.reduce(
+        %{
+          :already_decoded_logs => [],
+          :input_for_sig_provider_batched_request => []
+        },
+        fn {index, result}, acc ->
+          case result do
+            {:error, :try_with_sig_provider, {log, transaction_hash}} ->
+              Map.put(acc, :input_for_sig_provider_batched_request, [
+                {index,
+                 %{
+                   :log => log,
+                   :transaction_hash => transaction_hash
+                 }}
+                | acc.input_for_sig_provider_batched_request
+              ])
+
+            _ ->
+              Map.put(acc, :already_decoded_logs, [{index, result} | acc.already_decoded_logs])
+          end
+        end
+      )
+
+    decoded_with_sig_provider_logs =
+      Log.decode_events_batch_via_sig_provider(input_for_sig_provider_batched_request, skip_sig_provider?)
+
+    full_logs = already_decoded_logs ++ decoded_with_sig_provider_logs
+
+    full_logs
+    |> Enum.sort_by(fn {index, _log} -> index end, :asc)
+    |> Enum.map(fn {_index, log} ->
+      format_decoded_log_input(log)
+    end)
   end
 
   def prepare_transaction_action(action) do
@@ -258,8 +310,6 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
 
     %{
       "transaction_hash" => get_transaction_hash(transaction_or_hash),
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_hash` property
-      "tx_hash" => get_transaction_hash(transaction_or_hash),
       "address" => Helper.address_with_info(nil, log.address, log.address_hash, tags_for_address_needed?),
       "topics" => [
         log.first_topic,
@@ -365,7 +415,7 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
 
     status = transaction |> Chain.transaction_to_status() |> format_status()
 
-    revert_reason = revert_reason(status, transaction)
+    revert_reason = revert_reason(status, transaction, single_transaction?)
 
     decoded_input_data = decoded_input(decoded_input)
 
@@ -374,8 +424,6 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
       "result" => status,
       "status" => transaction.status,
       "block_number" => transaction.block_number,
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `block_number` property
-      "block" => transaction.block_number,
       "timestamp" => block_timestamp(transaction),
       "from" =>
         Helper.address_with_info(
@@ -413,7 +461,9 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
       "max_priority_fee_per_gas" => transaction.max_priority_fee_per_gas,
       "base_fee_per_gas" => base_fee_per_gas,
       "priority_fee" => priority_fee_per_gas && Wei.mult(priority_fee_per_gas, transaction.gas_used),
+      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_burnt_fee` property
       "tx_burnt_fee" => burnt_fees,
+      "transaction_burnt_fee" => burnt_fees,
       "nonce" => transaction.nonce,
       "position" => transaction.index,
       "revert_reason" => revert_reason,
@@ -425,14 +475,8 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
       "exchange_rate" => Market.get_coin_exchange_rate().usd_value,
       "method" => Transaction.method_name(transaction, decoded_input),
       "transaction_types" => transaction_types(transaction),
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_types` property
-      "tx_types" => transaction_types(transaction),
       "transaction_tag" =>
         GetTransactionTags.get_transaction_tags(transaction.hash, current_user(single_transaction? && conn)),
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_tag` property
-      "tx_tag" => GetTransactionTags.get_transaction_tags(transaction.hash, current_user(single_transaction? && conn)),
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `has_error_in_internal_transactions` property
-      "has_error_in_internal_txs" => transaction.has_error_in_internal_transactions,
       "has_error_in_internal_transactions" => transaction.has_error_in_internal_transactions,
       "authorization_list" => authorization_list(transaction.signed_authorizations)
     }
@@ -495,24 +539,38 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
     end
   end
 
-  defp revert_reason(status, transaction) do
-    if is_binary(status) && status |> String.downcase() |> String.contains?("reverted") do
-      case TransactionView.transaction_revert_reason(transaction, @api_true) do
-        {:error, _contract_not_verified, candidates} when candidates != [] ->
-          {:ok, method_id, text, mapping} = Enum.at(candidates, 0)
-          render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
+  defp revert_reason(status, transaction, single_transaction?) do
+    reverted? = is_binary(status) && status |> String.downcase() |> String.contains?("reverted")
 
-        {:ok, method_id, text, mapping} ->
-          render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
+    cond do
+      reverted? && single_transaction? ->
+        prepare_revert_reason_for_single_transaction(transaction)
 
-        _ ->
-          hex = TransactionView.get_pure_transaction_revert_reason(transaction)
-          render(__MODULE__, "revert_reason.json", raw: hex)
-      end
+      reverted? && !single_transaction? ->
+        %Transaction{revert_reason: revert_reason} = transaction
+        render(__MODULE__, "revert_reason.json", raw: revert_reason)
+
+      true ->
+        nil
     end
   rescue
     _ ->
       nil
+  end
+
+  defp prepare_revert_reason_for_single_transaction(transaction) do
+    case TransactionView.transaction_revert_reason(transaction, @api_true) do
+      {:error, _contract_not_verified, candidates} when candidates != [] ->
+        {:ok, method_id, text, mapping} = Enum.at(candidates, 0)
+        render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
+
+      {:ok, method_id, text, mapping} ->
+        render(__MODULE__, "decoded_input.json", method_id: method_id, text: text, mapping: mapping, error?: true)
+
+      _ ->
+        hex = TransactionView.get_pure_transaction_revert_reason(transaction)
+        render(__MODULE__, "revert_reason.json", raw: hex)
+    end
   end
 
   @doc """
@@ -531,13 +589,13 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
 
   def prepare_method_mapping(mapping) do
     Enum.map(mapping, fn {name, type, value} ->
-      %{"name" => name, "type" => type, "value" => ABIEncodedValueView.value_json(type, value)}
+      %{"name" => name, "type" => type, "value" => DecodingHelper.value_json(type, value)}
     end)
   end
 
   def prepare_log_mapping(mapping) do
     Enum.map(mapping, fn {name, type, indexed?, value} ->
-      %{"name" => name, "type" => type, "indexed" => indexed?, "value" => ABIEncodedValueView.value_json(type, value)}
+      %{"name" => name, "type" => type, "indexed" => indexed?, "value" => DecodingHelper.value_json(type, value)}
     end)
   end
 
@@ -912,6 +970,16 @@ defmodule BlockScoutWeb.API.V2.TransactionView do
       defp chain_type_fields(result, transaction, _single_transaction?, _conn, _watchlist_names) do
         # credo:disable-for-next-line Credo.Check.Design.AliasUsage
         BlockScoutWeb.API.V2.CeloView.extend_transaction_json_response(result, transaction)
+      end
+
+    :zilliqa ->
+      defp chain_type_transformations(transactions) do
+        transactions
+      end
+
+      defp chain_type_fields(result, transaction, _single_tx?, _conn, _watchlist_names) do
+        # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+        BlockScoutWeb.API.V2.ZilliqaView.extend_transaction_json_response(result, transaction)
       end
 
     _ ->

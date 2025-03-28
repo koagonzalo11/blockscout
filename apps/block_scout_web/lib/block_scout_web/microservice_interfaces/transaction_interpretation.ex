@@ -6,6 +6,7 @@ defmodule BlockScoutWeb.MicroserviceInterfaces.TransactionInterpretation do
   alias BlockScoutWeb.API.V2.{Helper, InternalTransactionView, TokenTransferView, TokenView, TransactionView}
   alias Ecto.Association.NotLoaded
   alias Explorer.Chain
+  alias Explorer.Helper, as: ExplorerHelper
   alias Explorer.Chain.{Data, InternalTransaction, Log, TokenTransfer, Transaction}
   alias HTTPoison.Response
 
@@ -102,7 +103,7 @@ defmodule BlockScoutWeb.MicroserviceInterfaces.TransactionInterpretation do
   defp try_get_cached_value(hash) do
     with {:ok, %Response{body: body, status_code: 200}} <- HTTPoison.get(cache_url(hash)),
          {:ok, json} <- body |> Jason.decode() do
-      {:ok, json |> Map.get("response") |> Map.put("success", true)} |> preload_template_variables()
+      {:ok, json} |> preload_template_variables()
     else
       _ ->
         :no_cached_data
@@ -178,15 +179,14 @@ defmodule BlockScoutWeb.MicroserviceInterfaces.TransactionInterpretation do
         value: transaction_with_meta.value,
         method: Transaction.method_name(transaction_with_meta, Transaction.format_decoded_input(decoded_input)),
         status: transaction_with_meta.status,
-        # todo: keep `tx_types` for compatibility with interpreter and remove when new interpreter is bound to `transaction_types` property
-        tx_types: TransactionView.transaction_types(transaction_with_meta),
         transaction_types: TransactionView.transaction_types(transaction_with_meta),
         raw_input: transaction_with_meta.input,
         decoded_input: decoded_input_data,
         token_transfers: prepare_token_transfers(token_transfers_with_meta, decoded_input),
         internal_transactions: prepare_internal_transactions(internal_transactions_with_meta, transaction_with_meta)
       },
-      logs_data: %{items: prepare_logs(logs_with_meta, transaction_with_meta)}
+      logs_data: %{items: prepare_logs(logs_with_meta, transaction_with_meta)},
+      chain_id: :block_scout_web |> Application.get_env(:chain_id) |> ExplorerHelper.parse_integer()
     }
   end
 
@@ -380,7 +380,8 @@ defmodule BlockScoutWeb.MicroserviceInterfaces.TransactionInterpretation do
         decoded_input: decoded_input_json,
         token_transfers: prepared_token_transfers
       },
-      logs_data: %{items: prepared_logs}
+      logs_data: %{items: prepared_logs},
+      chain_id: :block_scout_web |> Application.get_env(:chain_id) |> ExplorerHelper.parse_integer()
     }
   end
 

@@ -64,7 +64,8 @@ jobs:
               "stability",
               "zetachain",
               "zilliqa",
-              "zksync"
+              "zksync",
+              "neon"
             ];
 
             const extraChainTypes = ["suave", "polygon_edge"];
@@ -286,7 +287,7 @@ jobs:
 
       - run: |
           mix gettext.extract --merge | tee stdout.txt
-          ! grep "Wrote " stdout.txt
+          grep "Wrote priv/gettext/en/LC_MESSAGES/default.po (0 new messages, 0 removed, " stdout.txt
         working-directory: "apps/block_scout_web"
   sobelow:
     name: Sobelow security analysis
@@ -498,7 +499,7 @@ jobs:
       - matrix-builder
     services:
       postgres:
-        image: postgres:15
+        image: postgres:17
         env:
           # Match apps/explorer/config/test.exs config :explorer, Explorer.Repo, database
           POSTGRES_DB: explorer_test
@@ -561,7 +562,7 @@ jobs:
       - matrix-builder
     services:
       postgres:
-        image: postgres:15
+        image: postgres:17
         env:
           # Match apps/explorer/config/test.exs config :explorer, Explorer.Repo, database
           POSTGRES_DB: explorer_test
@@ -636,7 +637,7 @@ jobs:
       - matrix-builder
     services:
       postgres:
-        image: postgres:15
+        image: postgres:17
         env:
           # Match apps/explorer/config/test.exs config :explorer, Explorer.Repo, database
           POSTGRES_DB: explorer_test
@@ -708,7 +709,7 @@ jobs:
           - 6379:6379
 
       postgres:
-        image: postgres:15
+        image: postgres:17
         env:
           # Match apps/explorer/config/test.exs config :explorer, Explorer.Repo, database
           POSTGRES_DB: explorer_test

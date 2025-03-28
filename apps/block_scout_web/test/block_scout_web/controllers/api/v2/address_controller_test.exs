@@ -23,6 +23,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
   alias Explorer.Account.{Identity, WatchlistAddress}
   alias Explorer.Chain.Address.CurrentTokenBalance
+  alias Explorer.Chain.SmartContract.Proxy.ResolvedDelegateProxy
   alias Indexer.Fetcher.OnDemand.ContractCode, as: ContractCodeOnDemand
   alias Plug.Conn
 
@@ -54,12 +55,37 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
   end
 
   describe "/addresses/{address_hash}" do
-    test "get 404 on non existing address", %{conn: conn} do
+    test "get 200 on non existing address", %{conn: conn} do
       address = build(:address)
 
-      request = get(conn, "/api/v2/addresses/#{address.hash}")
+      correct_response = %{
+        "hash" => Address.checksum(address.hash),
+        "is_contract" => false,
+        "is_verified" => false,
+        "name" => nil,
+        "private_tags" => [],
+        "public_tags" => [],
+        "watchlist_names" => [],
+        "creator_address_hash" => nil,
+        "creation_transaction_hash" => nil,
+        "token" => nil,
+        "coin_balance" => nil,
+        "proxy_type" => nil,
+        "implementations" => [],
+        "block_number_balance_updated_at" => nil,
+        "has_decompiled_code" => false,
+        "has_validated_blocks" => false,
+        "has_logs" => false,
+        "has_tokens" => false,
+        "has_token_transfers" => false,
+        "watchlist_address_id" => nil,
+        "has_beacon_chain_withdrawals" => false,
+        "ens_domain_name" => nil,
+        "metadata" => nil
+      }
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      request = get(conn, "/api/v2/addresses/#{Address.checksum(address.hash)}")
+      check_response(correct_response, json_response(request, 200))
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -96,6 +122,10 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
         "ens_domain_name" => nil,
         "metadata" => nil
       }
+
+      stub(EthereumJSONRPC.Mox, :json_rpc, fn _, _ ->
+        {:ok, []}
+      end)
 
       request = get(conn, "/api/v2/addresses/#{Address.checksum(address.hash)}")
       check_response(correct_response, json_response(request, 200))
@@ -270,6 +300,73 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
              } = json_response(request, 200)
     end
 
+    test "get Resolved Delegate Proxy contract info", %{conn: conn} do
+      address_manager_address = insert(:address)
+
+      "0x" <> address_manager_address_hash_string_without_0x = to_string(address_manager_address.hash)
+
+      owner_address = insert(:address)
+
+      "0x" <> owner_address_hash_string_without_0x = to_string(owner_address.hash)
+
+      proxy_smart_contract =
+        insert(:smart_contract,
+          abi: ResolvedDelegateProxy.resolved_delegate_proxy_abi(),
+          constructor_arguments:
+            "0x000000000000000000000000" <>
+              address_manager_address_hash_string_without_0x <>
+              "0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000001a4f564d5f4c3143726f7373446f6d61696e4d657373656e676572000000000000"
+        )
+
+      transaction =
+        insert(:transaction,
+          to_address_hash: nil,
+          to_address: nil,
+          created_contract_address_hash: proxy_smart_contract.address_hash,
+          created_contract_address: proxy_smart_contract.address
+        )
+
+      insert(:address_name,
+        address: proxy_smart_contract.address,
+        primary: true,
+        name: proxy_smart_contract.name,
+        address_hash: proxy_smart_contract.address_hash
+      )
+
+      name = proxy_smart_contract.name
+      from = Address.checksum(transaction.from_address_hash)
+      transaction_hash = to_string(transaction.hash)
+      checksummed_proxy_address_hash = Address.checksum(proxy_smart_contract.address_hash)
+      "0x" <> proxy_address_hash_string_without_0x = to_string(proxy_smart_contract.address_hash)
+
+      implementation_address = insert(:address)
+
+      "0x" <> implementation_address_hash_string_without_0x = to_string(implementation_address.hash)
+      implementation_address_hash_string = to_string(Address.checksum(implementation_address.hash))
+
+      TestHelper.get_resolved_delegate_proxy_implementation_non_zero_address(
+        owner_address_hash_string_without_0x,
+        implementation_address_hash_string_without_0x,
+        proxy_address_hash_string_without_0x
+      )
+
+      request = get(conn, "/api/v2/addresses/#{checksummed_proxy_address_hash}")
+
+      assert %{
+               "hash" => ^checksummed_proxy_address_hash,
+               "is_contract" => true,
+               "is_verified" => true,
+               "name" => ^name,
+               "private_tags" => [],
+               "public_tags" => [],
+               "watchlist_names" => [],
+               "creator_address_hash" => ^from,
+               "creation_transaction_hash" => ^transaction_hash,
+               "proxy_type" => "resolved_delegate_proxy",
+               "implementations" => [%{"address" => ^implementation_address_hash_string, "name" => nil}]
+             } = json_response(request, 200)
+    end
+
     test "get watchlist id", %{conn: conn} do
       auth = build(:auth)
       address = insert(:address)
@@ -293,6 +390,10 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
           watch_erc_1155_output: true,
           notify_email: true
         })
+
+      stub(EthereumJSONRPC.Mox, :json_rpc, fn _, _ ->
+        {:ok, []}
+      end)
 
       request = get(conn, "/api/v2/addresses/#{Address.checksum(address.hash)}")
       assert response = json_response(request, 200)
@@ -340,12 +441,17 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
   end
 
   describe "/addresses/{address_hash}/counters" do
-    test "get 404 on non existing address", %{conn: conn} do
+    test "get 200 on non existing address", %{conn: conn} do
       address = build(:address)
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/counters")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{
+               "transactions_count" => "0",
+               "token_transfers_count" => "0",
+               "gas_usage_count" => "0",
+               "validations_count" => "0"
+             } = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -413,7 +519,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/transactions")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -901,12 +1007,12 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
   end
 
   describe "/addresses/{address_hash}/token-transfers" do
-    test "get 404 on non existing address", %{conn: conn} do
+    test "get 200 on non existing address", %{conn: conn} do
       address = build(:address)
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/token-transfers")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -1735,7 +1841,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/internal-transactions")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -1880,7 +1986,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/blocks-validated")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -1924,7 +2030,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/token-balances")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert json_response(request, 200) == []
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -1958,7 +2064,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/coin-balance-history")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2005,7 +2111,13 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/coin-balance-history-by-day")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      days_count =
+        Application.get_env(:block_scout_web, BlockScoutWeb.Chain.Address.CoinBalance)[:coin_balance_history_days]
+
+      assert %{
+               "days" => ^days_count,
+               "items" => []
+             } = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2045,7 +2157,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/logs")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2231,7 +2343,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/tokens")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2602,7 +2714,7 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/withdrawals")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2681,12 +2793,21 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
   end
 
   describe "/addresses/{address_hash}/tabs-counters" do
-    test "get 404 on non existing address", %{conn: conn} do
+    test "get 200 on non existing address", %{conn: conn} do
       address = build(:address)
 
       request = get(conn, "/api/v2/addresses/#{address.hash}/tabs-counters")
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{
+               "validations_count" => 0,
+               "transactions_count" => 0,
+               "token_transfers_count" => 0,
+               "token_balances_count" => 0,
+               "logs_count" => 0,
+               "withdrawals_count" => 0,
+               "internal_transactions_count" => 0,
+               "celo_election_rewards_count" => 0
+             } = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn} do
@@ -2918,12 +3039,12 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
       {:ok, endpoint: &"/api/v2/addresses/#{&1}/nft"}
     end
 
-    test "get 404 on non existing address", %{conn: conn, endpoint: endpoint} do
+    test "get 200 on non existing address", %{conn: conn, endpoint: endpoint} do
       address = build(:address)
 
       request = get(conn, endpoint.(address.hash))
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn, endpoint: endpoint} do
@@ -3166,12 +3287,12 @@ defmodule BlockScoutWeb.API.V2.AddressControllerTest do
       {:ok, endpoint: &"/api/v2/addresses/#{&1}/nft/collections"}
     end
 
-    test "get 404 on non existing address", %{conn: conn, endpoint: endpoint} do
+    test "get 200 on non existing address", %{conn: conn, endpoint: endpoint} do
       address = build(:address)
 
       request = get(conn, endpoint.(address.hash))
 
-      assert %{"message" => "Not found"} = json_response(request, 404)
+      assert %{"items" => [], "next_page_params" => nil} = json_response(request, 200)
     end
 
     test "get 422 on invalid address", %{conn: conn, endpoint: endpoint} do

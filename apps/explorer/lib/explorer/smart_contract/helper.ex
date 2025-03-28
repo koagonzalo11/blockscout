@@ -7,12 +7,13 @@ defmodule Explorer.SmartContract.Helper do
   alias Explorer.Chain.{Address, Hash, SmartContract}
   alias Explorer.Chain.SmartContract.Proxy
   alias Explorer.Chain.SmartContract.Proxy.Models.Implementation
-  alias Explorer.SmartContract.Writer
+  alias Explorer.Helper, as: ExplorerHelper
+  alias Explorer.SmartContract.{Reader, Writer}
   alias Phoenix.HTML
 
   @api_true [api?: true]
 
-  def queriable_method?(method) do
+  def queryable_method?(method) do
     method["constant"] || method["stateMutability"] == "view" || method["stateMutability"] == "pure"
   end
 
@@ -23,7 +24,7 @@ defmodule Explorer.SmartContract.Helper do
   def error?(function), do: function["type"] == "error"
 
   @doc """
-    Checks whether the function which is not queriable can be considered as read
+    Checks whether the function which is not queryable can be considered as read
     function or not.
   """
   @spec read_with_wallet_method?(%{}) :: true | false
@@ -277,4 +278,32 @@ defmodule Explorer.SmartContract.Helper do
   end
 
   def address_is_proxy?(%Address{smart_contract: _}, _), do: false
+
+  @doc """
+  Gets binary hash string from contract's getter.
+  """
+  @spec get_binary_string_from_contract_getter(binary(), binary(), SmartContract.abi(), list()) ::
+          binary() | [binary()] | nil | :error
+  def get_binary_string_from_contract_getter(signature, address_hash_string, abi, params \\ []) do
+    binary_hash =
+      case Reader.query_contract(
+             address_hash_string,
+             abi,
+             %{
+               "#{signature}" => params
+             },
+             false
+           ) do
+        %{^signature => {:ok, [result]}} ->
+          result
+
+        %{^signature => {:error, _error}} ->
+          :error
+
+        _ ->
+          nil
+      end
+
+    ExplorerHelper.add_0x_prefix(binary_hash)
+  end
 end
