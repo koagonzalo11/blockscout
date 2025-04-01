@@ -12,7 +12,7 @@ defmodule BlockScoutWeb.Mixfile do
       description: "Web interface for BlockScout.",
       dialyzer: [
         plt_add_deps: :app_tree,
-        ignore_warnings: "../../.dialyzer-ignore"
+        ignore_warnings: "../../.dialyzer_ignore.exs"
       ],
       elixir: "~> 1.17",
       elixirc_paths: elixirc_paths(Mix.env(), Application.get_env(:block_scout_web, :disable_api?)),
@@ -23,7 +23,7 @@ defmodule BlockScoutWeb.Mixfile do
         dialyzer: :test
       ],
       start_permanent: Mix.env() == :prod,
-      version: "6.9.2",
+      version: "7.0.2",
       xref: [
         exclude: [
           Explorer.Chain.PolygonZkevm.Reader,
@@ -58,7 +58,8 @@ defmodule BlockScoutWeb.Mixfile do
       "lib/block_scout_web/application.ex",
       "lib/block_scout_web/endpoint.ex",
       "lib/block_scout_web/health_router.ex",
-      "lib/block_scout_web/controllers/api/v1/health_controller.ex"
+      "lib/block_scout_web/controllers/api/health_controller.ex",
+      "lib/block_scout_web/prometheus/exporter.ex"
     ]
 
   defp elixirc_paths(_, _), do: elixirc_paths()
@@ -131,7 +132,7 @@ defmodule BlockScoutWeb.Mixfile do
       {:poison, "~> 4.0.1"},
       {:postgrex, ">= 0.0.0"},
       # For compatibility with `prometheus_process_collector`, which hasn't been updated yet
-      {:prometheus, "~> 4.0", override: true},
+      {:prometheus, "~> 5.0", override: true},
       # Gather methods for Phoenix requests
       {:prometheus_phoenix, "~> 1.2"},
       # Expose metrics from URL Prometheus server can scrape

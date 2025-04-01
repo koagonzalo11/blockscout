@@ -5,11 +5,13 @@ defmodule BlockScoutWeb.API.V2.SearchView do
   alias BlockScoutWeb.{BlockView, Endpoint}
   alias Explorer.Chain
   alias Explorer.Chain.{Address, Beacon.Blob, Block, Hash, Transaction, UserOperation}
+  alias Explorer.Helper, as: ExplorerHelper
+  alias Plug.Conn.Query
 
   def render("search_results.json", %{search_results: search_results, next_page_params: next_page_params}) do
     %{
       "items" => search_results |> Enum.map(&prepare_search_result/1) |> chain_type_fields(),
-      "next_page_params" => next_page_params
+      "next_page_params" => next_page_params |> encode_next_page_params()
     }
   end
 
@@ -41,7 +43,7 @@ defmodule BlockScoutWeb.API.V2.SearchView do
       "circulating_market_cap" =>
         search_result.circulating_market_cap && to_string(search_result.circulating_market_cap),
       "is_verified_via_admin_panel" => search_result.is_verified_via_admin_panel,
-      "certified" => if(search_result.certified, do: search_result.certified, else: false),
+      "certified" => search_result.certified || false,
       "priority" => search_result.priority
     }
   end
@@ -73,8 +75,22 @@ defmodule BlockScoutWeb.API.V2.SearchView do
     }
   end
 
+  def prepare_search_result(%{type: "metadata_tag"} = search_result) do
+    %{
+      "type" => search_result.type,
+      "name" => search_result.name,
+      "address" => search_result.address_hash,
+      "url" => address_path(Endpoint, :show, search_result.address_hash),
+      "is_smart_contract_verified" => search_result.verified,
+      "ens_info" => search_result[:ens_info],
+      "certified" => if(search_result.certified, do: search_result.certified, else: false),
+      "priority" => search_result.priority,
+      "metadata" => search_result.metadata
+    }
+  end
+
   def prepare_search_result(%{type: "block"} = search_result) do
-    block_hash = hash_to_string(search_result.block_hash)
+    block_hash = ExplorerHelper.add_0x_prefix(search_result.block_hash)
 
     {:ok, block} =
       Chain.hash_to_block(hash(search_result.block_hash),
@@ -96,13 +112,11 @@ defmodule BlockScoutWeb.API.V2.SearchView do
   end
 
   def prepare_search_result(%{type: "transaction"} = search_result) do
-    transaction_hash = hash_to_string(search_result.transaction_hash)
+    transaction_hash = ExplorerHelper.add_0x_prefix(search_result.transaction_hash)
 
     %{
       "type" => search_result.type,
       "transaction_hash" => transaction_hash,
-      # todo: keep next line for compatibility with frontend and remove when new frontend is bound to `transaction_hash` property
-      "tx_hash" => transaction_hash,
       "url" => transaction_path(Endpoint, :show, transaction_hash),
       "timestamp" => search_result.timestamp,
       "priority" => search_result.priority
@@ -110,7 +124,7 @@ defmodule BlockScoutWeb.API.V2.SearchView do
   end
 
   def prepare_search_result(%{type: "user_operation"} = search_result) do
-    user_operation_hash = hash_to_string(search_result.user_operation_hash)
+    user_operation_hash = ExplorerHelper.add_0x_prefix(search_result.user_operation_hash)
 
     %{
       "type" => search_result.type,
@@ -121,7 +135,7 @@ defmodule BlockScoutWeb.API.V2.SearchView do
   end
 
   def prepare_search_result(%{type: "blob"} = search_result) do
-    blob_hash = hash_to_string(search_result.blob_hash)
+    blob_hash = ExplorerHelper.add_0x_prefix(search_result.blob_hash)
 
     %{
       "type" => search_result.type,
@@ -130,9 +144,6 @@ defmodule BlockScoutWeb.API.V2.SearchView do
       "priority" => search_result.priority
     }
   end
-
-  defp hash_to_string(%Hash{bytes: bytes}), do: hash_to_string(bytes)
-  defp hash_to_string(hash), do: "0x" <> Base.encode16(hash, case: :lower)
 
   defp hash(%Hash{} = hash), do: hash
 
@@ -178,4 +189,21 @@ defmodule BlockScoutWeb.API.V2.SearchView do
         result
       end
   end
+
+  defp encode_next_page_params(next_page_params) when is_map(next_page_params) do
+    result =
+      next_page_params
+      |> Query.encode()
+      |> URI.decode_query()
+      |> Enum.map(fn {k, v} ->
+        {k, unless(v == "", do: v)}
+      end)
+      |> Enum.into(%{})
+
+    unless result == %{} do
+      result
+    end
+  end
+
+  defp encode_next_page_params(next_page_params), do: next_page_params
 end

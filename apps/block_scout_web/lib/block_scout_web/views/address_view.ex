@@ -4,6 +4,7 @@ defmodule BlockScoutWeb.AddressView do
   require Logger
 
   alias BlockScoutWeb.{AccessHelper, LayoutView}
+  alias BlockScoutWeb.API.V2.Helper, as: APIV2Helper
   alias Explorer.Account.CustomABI
   alias Explorer.{Chain, CustomContractsHelper, Repo}
   alias Explorer.Chain.Address.Counters
@@ -177,15 +178,10 @@ defmodule BlockScoutWeb.AddressView do
   @doc """
   Returns the primary name of an address if available. If there is no names on address function performs preload of names association.
   """
-  def primary_name(%Address{names: [_ | _] = address_names}) do
-    case Enum.find(address_names, &(&1.primary == true)) do
-      nil ->
-        %Address.Name{name: name} = Enum.at(address_names, 0)
-        name
+  def primary_name(nil), do: nil
 
-      %Address.Name{name: name} ->
-        name
-    end
+  def primary_name(%Address{names: [_ | _]} = address) do
+    APIV2Helper.address_name(address)
   end
 
   def primary_name(%Address{names: %Ecto.Association.NotLoaded{}} = address) do
@@ -250,7 +246,7 @@ defmodule BlockScoutWeb.AddressView do
 
   def smart_contract_with_read_only_functions?(%Address{smart_contract: _}), do: false
 
-  def read_function?(function), do: Helper.queriable_method?(function) || Helper.read_with_wallet_method?(function)
+  def read_function?(function), do: Helper.queryable_method?(function) || Helper.read_with_wallet_method?(function)
 
   def smart_contract_with_write_functions?(%Address{smart_contract: %SmartContract{}} = address) do
     !contract_interaction_disabled?() &&
@@ -331,6 +327,17 @@ defmodule BlockScoutWeb.AddressView do
       view_module: __MODULE__,
       partial: "_link.html",
       address: address,
+      contract: contract?,
+      truncate: truncate,
+      use_custom_tooltip: false
+    ]
+  end
+
+  defp matching_address_check(current_address, nil, contract?, truncate) do
+    [
+      view_module: __MODULE__,
+      partial: "_responsive_hash.html",
+      address: current_address,
       contract: contract?,
       truncate: truncate,
       use_custom_tooltip: false
@@ -481,7 +488,7 @@ defmodule BlockScoutWeb.AddressView do
           | {:error, atom(), list()}
           | {{:error, :contract_not_verified, list()}, any()}
   def decode(log, transaction) do
-    {result, _contracts_acc, _events_acc} = Log.decode(log, transaction, [], true)
+    {result, _full_abi_per_address_hash_contracts_acc, _events_acc} = Log.decode(log, transaction, [], true, false)
     result
   end
 end
