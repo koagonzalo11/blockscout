@@ -3,9 +3,9 @@
     "type": "git",
     "url": "git+https://github.com/blockscout/blockscout.git"
   },
-  "private": true,
+  "public": true,
   "name": "blockscout",
-  "author": "Blockscout",
+  "author": "Azeh Agowa",
   "license": "GPL-3.0",
   "engines": {
     "node": ">=16.0.0",
